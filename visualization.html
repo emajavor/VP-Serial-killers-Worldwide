@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="hr">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Serial killers</title>
+    <script src="https://d3js.org/d3.v6.min.js"></script>
+    <script src="https://d3js.org/topojson.v2.min.js"></script>
+    <style>
+        body {
+        display: flex;
+        flex-direction: column;
+        margin: 0;
+        background-color: #002222;
+        }
+
+        .header {
+        background-color: #550000;
+        /* Dark background color */
+        color: #fff;
+        /* White text color */
+        padding: 20px;
+        text-align: center;
+        font-size: 48px;
+        font-weight: bold;
+        
+        }
+
+        .container {
+        display: flex;
+        width: 100%;
+        height: 75vh;
+        }
+
+        .map-container {
+        flex-grow: 1;
+        position: relative;
+        }
+
+        .timeline-container {
+        width: 100%;
+        height: 10vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        }
+
+        .left-container {
+        /* overflow-y: auto; */
+        border: 1px solid #ffffff;
+        margin-right: 20px;
+        margin-top: 20px;
+        font-size: 20px;
+        width: 20%;
+        max-height: 80%;
+        padding: 10px;
+        box-sizing: border-box;
+        word-wrap: break-word;
+        visibility: hidden;
+        }
+
+        .note-box {
+        overflow-y: auto;
+        border: 1px solid #fff;
+        padding: 10px;
+        visibility: hidden;
+        background-color: #3276768b;
+        /* Added border-radius for rounded corners */
+        border-radius: 20px;
+        }
+
+        .bar-chart {
+        /* Removed overflow-y: auto; */
+        font-size: 20px;
+        padding: 5px;
+        visibility: hidden;
+        justify-content: center;
+        align-items: center;
+        }
+
+        .note-box.visible,
+        .bar-chart.visible {
+        visibility: visible;
+        }
+
+        .world-map {
+        width: 80%;
+        height: 90%;
+        padding-top: 0%;
+        }
+
+        .brush .selection {
+        fill: #82c1c1;
+        height: 20px;
+        opacity: 0.9;
+        y: 40px;
+        shape-rendering: auto;
+        stroke-width: 1px;
+        }
+
+    </style>
+</head>
+
+<body>
+    <div class="header">Most infamous serial killers</div>
+    <div class="container">
+        <div class="left-container">
+            <div id="notes" class="note-box"></div>
+            <div id="barchart" class="bar-chart"></div>
+        </div>
+        <div class="map-container">
+            <div id="map" class="world-map"></div>
+        </div>
+    </div>
+    <div id="timeline" class="timeline-container"></div>
+
+    <script>
+        d3.json("data.json").then(data => {
+            const width = document.querySelector('.world-map').clientWidth;
+            const height = document.querySelector('.world-map').clientHeight;
+
+            data.forEach(d => {
+                const years = d["Years active"].split(' to ').map(Number);
+                d.startYear = years[0];
+                d.endYear = years[1];
+            });
+
+            const minYear = d3.min(data, d => d.startYear);
+            const maxYear = d3.max(data, d => d.endYear);
+
+            const timeline = d3.select("#timeline").append("svg")
+                .attr("width", width)
+                .attr("height", 100);
+
+            const xScale = d3.scaleLinear()
+                .domain([minYear, maxYear])
+                .range([50, width - 50]);
+            timeline.append("line")
+                .attr("x1", 50)
+                .attr("y1", 50)
+                .attr("x2", width - 50)
+                .attr("y2", 50)
+                .attr("stroke", "#ffffff")
+                .attr("stroke-width", 2); // Možeš prilagoditi debljinu linije
+
+
+            const xAxis = d3.axisBottom(xScale).tickFormat(d3.format("d"));
+            timeline.append("g")
+                .attr("transform", "translate(0,50)")
+                .call(xAxis)
+                .selectAll("text")
+                .style("font-size", "14px")
+                .attr("dy", "1.5em")
+                .attr("fill", "#ffffff");
+
+            const brush = d3.brushX()
+                .extent([[50, 20], [width - 50, 80]])
+                .on("brush end", brushed);
+
+            timeline.append("g")
+                .attr("class", "brush")
+                .call(brush);
+
+            for (let year = minYear; year <= maxYear; year += 5) {
+                timeline.append("circle")
+                    .attr("cx", xScale(year))
+                    .attr("cy", 50)
+                    .attr("r", 5)
+                    .attr("fill", "#ffffff");
+            }
+
+            const projection = d3.geoMercator().scale(150).translate([width / 2, height / 2]);
+            const path = d3.geoPath().projection(projection);
+            const svgMap = d3.select("#map").append("svg")
+                .attr("width", width)
+                .attr("height", height);
+
+            d3.json("https://d3js.org/world-110m.v1.json").then(world => {
+                svgMap.append("g")
+                    .selectAll("path")
+                    .data(topojson.feature(world, world.objects.countries).features)
+                    .enter().append("path")
+                    .attr("d", path)
+                    .attr("fill", "#005555")
+                    .attr("stroke", "#ffffff");
+
+                updateMap(minYear, maxYear);
+            });
+
+            function brushed(event) {
+                const selection = event.selection;
+                if (selection) {
+                    const [x0, x1] = selection.map(xScale.invert);
+                    updateMap(Math.floor(x0), Math.floor(x1));
+                }
+            }
+
+            function updateMap(startYear, endYear) {
+                svgMap.selectAll(".marker").remove();
+
+                const activePeople = data.filter(d => d.startYear <= endYear && d.endYear >= startYear);
+
+                const markerPositions = {}; // Čuvanje pozicija oznaka kako bi se izbjeglo preklapanje
+
+                activePeople.forEach(d => {
+                    const country = d.Country;
+                    const coordinates = projection([getLongitude(country), getLatitude(country)]);
+
+                    // Provjeravamo preklapanje i prilagođavamo poziciju
+                    let [x, y] = coordinates;
+                    const key = `${x},${y}`;
+                    if (markerPositions[key]) {
+                        const radius = 15; // Radijus za pomicanje oznake
+                        const randomAngle = Math.random() * Math.PI * 2;
+                        x += Math.cos(randomAngle) * radius;
+                        y += Math.sin(randomAngle) * radius;
+                    }
+                    markerPositions[key] = true;
+
+                    svgMap.append("image")
+                        .attr("class", "marker")
+                        .attr("x", x - 10)
+                        .attr("y", y - 20)
+                        .attr("width", 30)
+                        .attr("height", 30)
+                        .attr("xlink:href", "https://freesvg.org/img/map-pin.png")
+                        .on("click", () => {
+                            showNotes(d.Name, d.Notes);
+                            showBarchart(d["Proven victims"], d["Possible victims"]);
+                        });
+                });
+            }
+
+            function showNotes(name, notes) {
+                const notesBox = d3.select("#notes");
+                notesBox.classed("visible", true).html(`
+                    <div style="color: #ffffff;">
+                        <strong style="font-size: 20px;">${name}</strong><br><br>${notes}
+                    </div>
+                `);
+            }
+
+            function showBarchart(provenVictims, possibleVictims) {
+                const barchart = d3.select("#barchart");
+                barchart.classed("visible", true).html("");
+
+                const svg = barchart.append("svg")
+                    .attr("width", 250)
+                    .attr("height", 250);
+
+                const barChartHeight = 100;
+                const barChartWidth = 250;
+
+                const data = [
+                    { label: "Proven", value: provenVictims },
+                    { label: "Possible", value: possibleVictims },
+                ];
+
+                const maxY = d3.max(data, d => d.value);
+
+                const yScale = d3.scaleLinear()
+                    .domain([0, maxY + 50])
+                    .range([barChartHeight, 0]);
+
+                const xScale = d3.scaleBand()
+                    .domain(data.map(d => d.label))
+                    .range([0, barChartWidth])
+                    .padding(0.3);
+
+                // Enter selection with animation
+                const bars = svg.selectAll(".bar")
+                    .data(data)
+                    .enter()
+                    .append("rect")
+                    .attr("class", "bar")
+                    .attr("x", d => xScale(d.label))
+                    .attr("y", barChartHeight) // Start bars at full height
+                    .attr("width", xScale.bandwidth() + 20)
+                    .attr("height", 0) // Initial height set to 0
+                    .attr("fill", d => d.label === "Proven" ? "#669999" : "#b30000");
+
+                // Animate bar height transition
+                bars.transition()
+                    .duration(1000) // adjust duration as needed (in milliseconds)
+                    .attr("y", d => yScale(d.value))
+                    .attr("height", d => barChartHeight - yScale(d.value));
+
+                // Text elements with delayed appearance
+                const barTexts = svg.selectAll(".bar-text")
+                    .data(data)
+                    .enter()
+                    .append("text")
+                    .attr("class", "bar-text")
+                    .attr("x", d => xScale(d.label) + xScale.bandwidth() / 2)
+                    .attr("y", barChartHeight + 20) // Initially placed outside bar
+                    .attr("text-anchor", "middle")
+                    .text(d => d.value)
+                    .style("font-weight", "bold")
+                    .attr("fill", "#ffffff")
+                    .attr("opacity", 0); // Initially invisible
+
+                // Animate text opacity transition after bar animation
+                barTexts.transition()
+                    .delay(1000) // Adjust delay to match bar animation duration
+                    .duration(500)
+                    .attr("y", d => yScale(d.value) - 5)
+                    .attr("opacity", 1); // Fade in text
+
+                svg.selectAll(".label-text")
+                    .data(data)
+                    .enter().append("text")
+                    .attr("class", "label-text")
+                    .attr("x", d => xScale(d.label) + xScale.bandwidth() / 2)
+                    .attr("y", barChartHeight + 50)
+                    .attr("text-anchor", "middle")
+                    .text(d => d.label)
+                    .attr("fill", "#ffffff");
+                }
+
+
+            function getLatitude(country) {
+                const latitudes = {
+                    "Colombia": 4.5709,
+                    "Peru": -9.19,
+                    "Pakistan": 30.3753,
+                    "Russia": 61.524,
+                    "Brazil": -14.235,
+                    "India": 20.5937,
+                    "China": 35.8617,
+                    "United States": 37.0902,
+                    "Italy": 41.8719,
+                    "Soviet Union": 61.524,
+                    "Ukraine": 48.3794,
+                    "Canada": 56.1304,
+                    "Mexico": 23.6345,
+                    "South Africa": -30.5595,
+                    "Indonesia": -0.7893,
+                    "Egypt": 26.8206,
+                    "Morocco": 31.7917,
+                    "Kingdom of Romania": 45.9432,
+                    "Iraq": 33.2232
+                };
+                return latitudes[country] || 0;
+            }
+
+            function getLongitude(country) {
+                const longitudes = {
+                    "Colombia": -74.2973,
+                    "Peru": -75.0152,
+                    "Pakistan": 69.3451,
+                    "Russia": 105.3188,
+                    "Brazil": -51.9253,
+                    "India": 78.9629,
+                    "China": 104.1954,
+                    "United States": -95.7129,
+                    "Italy": 12.5674,
+                    "Soviet Union": 105.3188,
+                    "Ukraine": 31.1656,
+                    "Canada": -106.3468,
+                    "Mexico": -102.5528,
+                    "South Africa": 22.9375,
+                    "Indonesia": 113.9213,
+                    "Egypt": 30.8025,
+                    "Morocco": -7.0926,
+                    "Kingdom of Romania": 24.9668,
+                    "Iraq": 43.6793,
+                };
+                return longitudes[country] || 0;
+            }
+        });
+    </script>
+</body>
+
+</html>

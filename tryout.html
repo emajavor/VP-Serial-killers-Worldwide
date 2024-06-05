@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>D3.js Map with Timeline Slider</title>
+    <script src="https://d3js.org/d3.v6.min.js"></script>
+    <script src="https://d3js.org/topojson.v2.min.js"></script>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            margin: 0;
+        }
+        .container {
+            display: flex;
+            width: 100%;
+            height: 90vh;
+        }
+        .map-container {
+            flex-grow: 1;
+            position: relative;
+        }
+        .timeline-container {
+            width: 100%;
+            height: 10vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .left-container {
+            overflow-y: auto;
+            border: 1px solid #000;
+            margin-right: 20px;
+            margin-top: 20px;
+            font-size: 20px;
+            display: inline-block;
+            width: 20%;
+            max-height: 80%;
+            padding: 10px;
+            box-sizing: border-box;
+            word-wrap: break-word;
+            visibility: hidden;
+        }
+        .note-box {
+            overflow-y: auto;
+            border: 1px solid #000;
+            padding: 10px;
+            visibility: hidden;
+        }
+        .bar-chart {
+            overflow-y: auto;
+            font-size: 20px;
+            display: inline-block;
+            width: 100%;
+            max-height: 40%;
+            padding: 10px;
+            box-sizing: border-box;
+            word-wrap: break-word;
+            visibility: hidden;
+        }
+        .note-box.visible, .bar-chart.visible {
+            visibility: visible;
+        }
+        .world-map {
+            width: 80%;
+            height: 90%;
+        }
+        .brush .selection {
+            fill: steelblue;
+            fill-opacity: 0.3;
+            height: 20px;
+            y: 40px;
+            shape-rendering: auto;
+            stroke-width: 1px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="left-container">
+            <div id="notes" class="note-box"></div>
+            <div id="barchart" class="bar-chart"></div>
+        </div>
+        <div class="map-container">
+            <div id="map" class="world-map"></div>
+        </div>
+    </div>
+    <div id="timeline" class="timeline-container"></div>
+
+    <script>
+        d3.json("data.json").then(data => {
+            const width = document.querySelector('.world-map').clientWidth;
+            const height = document.querySelector('.world-map').clientHeight;
+
+            data.forEach(d => {
+                const years = d["Years active"].split(' to ').map(Number);
+                d.startYear = years[0];
+                d.endYear = years[1];
+            });
+
+            const minYear = d3.min(data, d => d.startYear);
+            const maxYear = d3.max(data, d => d.endYear);
+
+            const timeline = d3.select("#timeline").append("svg")
+                .attr("width", width)
+                .attr("height", 100);
+
+            const xScale = d3.scaleLinear()
+                .domain([minYear, maxYear])
+                .range([50, width - 50]);
+
+            const xAxis = d3.axisBottom(xScale).tickFormat(d3.format("d"));
+            timeline.append("g")
+                .attr("transform", "translate(0,50)")
+                .call(xAxis)
+                .selectAll("text")
+                .style("font-size", "14px")
+                .attr("dy", "1.5em");
+
+            const slider = timeline.append("g")
+                .attr("class", "slider")
+                .attr("transform", "translate(0,50)");
+
+            slider.append("line")
+                .attr("class", "track")
+                .attr("x1", xScale.range()[0])
+                .attr("x2", xScale.range()[1])
+                .attr("stroke", "#000")
+                .attr("stroke-width", 8)
+                .attr("stroke-opacity", 0.3)
+                .attr("shape-rendering", "crispEdges");
+
+            const handle = slider.append("circle")
+                .attr("class", "handle")
+                .attr("r", 10)
+                .attr("cx", xScale(minYear))
+                .attr("fill", "steelblue");
+
+            slider.call(d3.drag()
+                .on("start drag", event => {
+                    const year = Math.round(xScale.invert(event.x));
+                    handle.attr("cx", xScale(year));
+                    updateMap(year, year);
+                }));
+
+            const projection = d3.geoMercator().scale(150).translate([width / 2, height / 2]);
+            const path = d3.geoPath().projection(projection);
+            const svgMap = d3.select("#map").append("svg")
+                .attr("width", width)
+                .attr("height", height);
+
+            d3.json("https://d3js.org/world-110m.v1.json").then(world => {
+                svgMap.append("g")
+                    .selectAll("path")
+                    .data(topojson.feature(world, world.objects.countries).features)
+                    .enter().append("path")
+                    .attr("d", path)
+                    .attr("fill", "#ffccff")
+                    .attr("stroke", "#800080");
+
+                updateMap(minYear, minYear);
+            });
+
+            function updateMap(startYear, endYear) {
+                svgMap.selectAll(".marker").remove();
+
+                const activePeople = data.filter(d => d.startYear <= endYear && d.endYear >= startYear);
+
+                activePeople.forEach(d => {
+                    const country = d.Country;
+                    const coordinates = projection([getLongitude(country), getLatitude(country)]);
+
+                    svgMap.append("image")
+                        .attr("class", "marker")
+                        .attr("x", coordinates[0] - 10)
+                        .attr("y", coordinates[1] - 20)
+                        .attr("width", 30)
+                        .attr("height", 30)
+                        .attr("xlink:href", "https://freesvg.org/img/map-pin.png")
+                        .on("click", () => {
+                            showNotes(d.Notes);
+                            showBarchart(d["Proven victims"], d["Possible victims"]);
+                        });
+                });
+            }
+
+            function showNotes(notes) {
+                const notesBox = d3.select("#notes");
+                notesBox.classed("visible", true).text(notes);
+            }
+
+            function showBarchart(provenVictims, possibleVictims) {
+                const barchart = d3.select("#barchart");
+                barchart.classed("visible", true).html("");
+
+                const svg = barchart.append("svg")
+                    .attr("width", 200)
+                    .attr("height", 150);
+
+                const barChartHeight = 100;
+                const barChartWidth = 250;
+
+                let possibleVictimsValue;
+                if (typeof possibleVictims === "string" && possibleVictims.includes("–")) {
+                    const range = possibleVictims.split("–").map(d => d.replace("+", "").trim());
+                    possibleVictimsValue = (parseInt(range[0]) + parseInt(range[1])) / 2;
+                } else {
+                    possibleVictimsValue = parseInt(possibleVictims);
+                }
+
+                const data = [
+                    { label: "Proven Victims", value: provenVictims },
+                    { label: "Possible Victims", value: possibleVictimsValue }
+                ];
+
+                const maxY = d3.max(data, d => d.value);
+
+                const yScale = d3.scaleLinear()
+                    .domain([0, maxY])
+                    .range([barChartHeight, 0]);
+
+                const xScale = d3.scaleBand()
+                    .domain(data.map(d => d.label))
+                    .range([0, barChartWidth])
+                    .padding(0.4);
+
+                svg.selectAll(".bar")
+                    .data(data)
+                    .enter().append("rect")
+                    .attr("class", "bar")
+                    .attr("x", d => xScale(d.label))
+                    .attr("y", d => yScale(d.value))
+                    .attr("width", xScale.bandwidth())
+                    .attr("height", d => barChartHeight - yScale(d.value))
+                    .attr("fill", d => d.label === "Proven Victims" ? "blue" : "red");
+
+                svg.selectAll(".bar-text")
+                    .data(data)
+                    .enter().append("text")
+                    .attr("class", "bar-text")
+                    .attr("x", d => xScale(d.label) + xScale.bandwidth() / 2)
+                    .attr("y", d => yScale(d.value) - 5)
+                    .attr("text-anchor", "middle")
+                    .text(d => d.value);
+
+                svg.selectAll(".label-text")
+                    .data(data)
+                    .enter().append("text")
+                    .attr("class", "label-text")
+                    .attr("x", d => xScale(d.label) + xScale.bandwidth() / 2)
+                    .attr("y", barChartHeight + 15)
+                    .attr("text-anchor", "middle")
+                    .text(d => d.label);
+            }
+            function getLatitude(country) {
+                const latitudes = {
+                    "Colombia": 4.5709,
+                    "Peru": -9.19,
+                    "Pakistan": 30.3753,
+                    "Russia": 61.524,
+                    "Brazil": -14.235,
+                    "India": 20.5937,
+                    "China": 35.8617,
+                    "United States": 37.0902,
+                    "Italy": 41.8719,
+                    "Soviet Union": 61.524,
+                    "Ukraine": 48.3794,
+                    "Canada": 56.1304,
+                    "Mexico": 23.6345,
+                    "South Africa": -30.5595,
+                    "Indonesia": -0.7893,
+                    "Egypt": 26.8206,
+                    "Morocco": 31.7917,
+                    "Kingdom of Romania": 45.9432,
+                    "Iraq": 33.2232
+                };
+                return latitudes[country] || 0;
+            }
+
+            function getLongitude(country) {
+                const longitudes = {
+                    "Colombia": -74.2973,
+                    "Peru": -75.0152,
+                    "Pakistan": 69.3451,
+                    "Russia": 105.3188,
+                    "Brazil": -51.9253,
+                    "India": 78.9629,
+                    "China": 104.1954,
+                    "United States": -95.7129,
+                    "Italy": 12.5674,
+                    "Soviet Union": 105.3188,
+                    "Ukraine": 31.1656,
+                    "Canada": -106.3468,
+                    "Mexico": -102.5528,
+                    "South Africa": 22.9375,
+                    "Indonesia": 113.9213,
+                    "Egypt": 30.8025,
+                    "Morocco": -7.0926,
+                    "Kingdom of Romania": 24.9668,
+                    "Iraq": 43.6793,
+                };
+                return longitudes[country] || 0;
+            }
+        });
+    </script>
+</body>
+</html>
+
